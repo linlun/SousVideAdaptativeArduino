@@ -45,13 +45,16 @@
 */
 #ifndef AdaptiveRegulator_h
 #define AdaptiveRegulator_h
-
+#include <config.h>
+#include <user_config.h>
+#include <SmingCore/SmingCore.h>
+#include <stdlib.h>
 class AdaptiveRegulator
 {
 
 
   public:
-
+#define OUTPUT_TO_SERIAL	1
   //Constants used in some of the functions
 // temperature sensor
 #define SAMPLE_DELAY 5000
@@ -60,7 +63,7 @@ class AdaptiveRegulator
 #define FIRST_RAMP_CUTOFF_RATIO 0.65
 
 // Security features
-#define MIN_TARGET_TEMP 45   /*sufficient for most sous-vide recipes*/
+#define MIN_TARGET_TEMP 39   /*sufficient for most sous-vide recipes*/
 #define MAX_TARGET_TEMP 95   /*sufficient for most sous-vide recipes*/
 #define SHUTDOWN_TEMP 98   /*shutdown if temp reaches that temp*/
 #define MAX_UPTIME_HOURS 72   /*shutdown after 72 hours of operation*/
@@ -72,7 +75,7 @@ class AdaptiveRegulator
 #define LARGE_TEMP_DIFFERENCE 1  /* for more than "1" degree, use the Large setting (Small otherwise)*/
 
   //commonly used functions **************************************************************************
-    AdaptiveRegulator(uint8_t pin, double*, double*, double*);        // * constructor.  links the PID to the Input, Output, and Setpoint. 
+    AdaptiveRegulator(uint8_t pin, float* Input, float* Setpoint);        // * constructor.  links the PID to the Input, Output, and Setpoint.
 	
    
     bool Compute();                       // * performs the regulator calculation.  it should be
@@ -86,8 +89,9 @@ class AdaptiveRegulator
     
 										  
   //Display functions ****************************************************************
-
-
+    enum operatingState { INITIAL_WAIT = 0, TEMP_DROP, TEMP_RISE, FIRST_RAMP, BOOST_TEMP, COUNTER_FALL, WAIT_NATURAL_DROP, REGULATE};
+    operatingState opState = INITIAL_WAIT;
+    boolean isHeatOn = false;
   private:	
 	void ResetVariablesForRegulationCalculation();
 	void EnterRegulateStateOrWaitSmoothLowering();
@@ -99,13 +103,13 @@ class AdaptiveRegulator
 	void GetTemperatureAndEnforceSecurity();
 	void WatchForTempFalling();
 	void StartBoostToTarget();
-	void StartBoostToTarget(double offset);
-	double HeatingTimeNeeded(double degreeOffset);
-	void HeatForDegrees(double degrees);
+	void StartBoostToTarget(float offset);
+	float HeatingTimeNeeded(float degreeOffset);
+	void HeatForDegrees(float degrees);
 	void PerformBoostTemp();
 	void FinishBoostTemp();
-	double predictTemp(unsigned long horizon);
-	void AdaptGain(double resultingTemp);
+	float predictTemp(unsigned long horizon);
+	void AdaptGain(float resultingTemp);
 	void StartInitialRamping();
 	void setupCutOffTempForInitialRamping();
 	void PerformFirstRamp();
@@ -116,7 +120,7 @@ class AdaptiveRegulator
 	// Security checks    
 	void checkShutdownConditions();
 	void shutdownDevice();
-	void SetApproximatePulseDurationsForREgulation(double tempLost, unsigned long regDelay );
+	void SetApproximatePulseDurationsForREgulation(float tempLost, unsigned long regDelay );
 	void SetPulseDurationsForREgulation(unsigned long neededUptimeForCompensate, unsigned long regDelay );
 	/**************************************************************************************/
 	/*                                                                                    */
@@ -124,7 +128,7 @@ class AdaptiveRegulator
 	/*                                                                                    */
 	/**************************************************************************************/
 	// ------------------------- temperature array UTILITIES
-	void tempPreviousArrayPushValue(double val);
+	void tempPreviousArrayPushValue(float val);
 	bool IsStabilizingOrDropping();
 	bool IsStabilizingOrGrowing();
 	bool IsStabilizing();
@@ -137,9 +141,9 @@ class AdaptiveRegulator
 	float getTemperature();
 		
 	
-	double *myInput;              // * Pointers to the Input, Output, and Setpoint variables
-    double *myOutput;             //   This creates a hard link between the variables and the 
-    double *mySetpoint;           //   PID, freeing the user from having to constantly tell us
+	float *myInput;              // * Pointers to the Input, Output, and Setpoint variables
+								  //   This creates a hard link between the variables and the
+	float *mySetpoint;           //   PID, freeing the user from having to constantly tell us
                                   //   what these values are.  with pointers we'll just know.
 			  
 	unsigned long lastTime;
@@ -148,29 +152,28 @@ class AdaptiveRegulator
 // ------------------------- DEFINITIONS & INITIALISATIONS
 
 // temperatures
-double environmentTemp = 0;
-double actualTemp = 0;
-double targetTemp = 0;
-double storedTargetTemp = 0;
-double initialTemp = 0;
-double firstRampCutOffTemp = 0;
-double maxRegTEmp = 0;
-double minRegTEmp = 0;
-double tempBeforeDrop = 0;
-double tempBeforeHeating = 0;
-double parametersRegulationSetForTemp = 0;
-double actualTempAtBoostStart = 0;
-double expectedTempChange = 0;
-double tempPreviousArray[6]= {0, 0, 0, 0, 0, 0};
+float environmentTemp = 0;
+float actualTemp = 0;
+float storedTargetTemp = 0;
+float initialTemp = 0;
+float firstRampCutOffTemp = 0;
+float maxRegTEmp = 0;
+float minRegTEmp = 0;
+float tempBeforeDrop = 0;
+float tempBeforeHeating = 0;
+float parametersRegulationSetForTemp = 0;
+float actualTempAtBoostStart = 0;
+float expectedTempChange = 0;
+float tempPreviousArray[6]= {0, 0, 0, 0, 0, 0};
 
 // derivatives
-double currentTempDerivative;
-double previousDerivative;
+float currentTempDerivative;
+float previousDerivative;
 
 // gains
-double secondPerDegreeGainRef = 0;
-double secondPerDegreeGainLarge = 0;
-double secondPerDegreeGainSmall = 0;
+float secondPerDegreeGainRef = 0;
+float secondPerDegreeGainLarge = 0;
+float secondPerDegreeGainSmall = 0;
 
 // booleans & states
 bool isNewSample = false;
@@ -179,10 +182,9 @@ boolean waitForSuddenRise = false;
 boolean isDerivativeReliable = false;
 boolean waitingForStabilization = false;
 boolean doBackToFirstRampWhenStabilizing = false;
-boolean isHeatOn = false;
+
 boolean isCounteracting = false;
-enum operatingState { INITIAL_WAIT = 0, TEMP_DROP, TEMP_RISE, FIRST_RAMP, BOOST_TEMP, COUNTER_FALL, WAIT_NATURAL_DROP, REGULATE};
-operatingState opState = INITIAL_WAIT;
+
 enum boostTypes {HIGHBOOST = 0, LOWBOOST};
 boostTypes boostType = HIGHBOOST;
 int warningsBeforeCounterFall;

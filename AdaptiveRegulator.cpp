@@ -43,7 +43,7 @@
 *
 *
 */
-
+#include <AdaptiveRegulator.h>
 // ------------------------- CONSTANTS
 
 
@@ -51,9 +51,8 @@
  *    The parameters specified here are those for for which we can't set up 
  *    reliable defaults, so we need to have the user set them.
  ***************************************************************************/
-AdaptiveRegulator::AdaptiveRegulator(uint8_t pin, double* Input, double* Output, double* Setpoint)
+AdaptiveRegulator::AdaptiveRegulator(uint8_t pin, float* Input, float* Setpoint)
 {
-	myOutput = Output;
     myInput = Input;
     mySetpoint = Setpoint;
 	_pin = pin;
@@ -62,14 +61,16 @@ AdaptiveRegulator::AdaptiveRegulator(uint8_t pin, double* Input, double* Output,
 	/*
 	Read temperature
 	*/
-	actualTemp =  &myInput;
-	targetTemp = &mySetpoint;
+	actualTemp =  *myInput;
 	tcurrent = millis();
+	tGetTemperatureSample = 0;
 	maxUptimeMillis = MAX_UPTIME_HOURS * (unsigned long)3600 * (unsigned long)1000;
 
 	// Initial State  
 	warningsBeforeCounterFall = 3;
 	opState = INITIAL_WAIT;
+
+	lastTime = millis()-delaytime;
 }
 
 
@@ -84,15 +85,16 @@ AdaptiveRegulator::AdaptiveRegulator(uint8_t pin, double* Input, double* Output,
 
 bool AdaptiveRegulator::Compute() {   
     
-	 unsigned long tcurrent = millis();
+	tcurrent = millis();
    unsigned long timeChange = (tcurrent - lastTime);
    if(timeChange>=delaytime)
    {
+
 	  // get temperature every few seconds and output it to serial if needed. Alert if we are within range
 	  GetTemperatureAndEnforceSecurity();
 	  // compute current temperatue Derivative
 	  SetActualDerivative();
-	  
+	  //Serial.print(".");
 	  
 	  switch (opState)
 	   {
@@ -106,13 +108,12 @@ bool AdaptiveRegulator::Compute() {
 					environmentTemp = min(actualTemp, 30);			
 				}
 				// check if target temp is in acceptable range and switch to first ramp if so
-				if(targetTemp >= MIN_TARGET_TEMP)
+				if(*mySetpoint >= MIN_TARGET_TEMP)
 				{
 					StartInitialRamping();        
 				}
 			}		
 			break;
-		  
 		case TEMP_DROP:
 			// wait for stabilization or for sudden rise
 			if (waitForSuddenRise == false && IsStabilizing())
@@ -173,11 +174,11 @@ bool AdaptiveRegulator::Compute() {
 				{			
 					// check derivative
 					//if(isDerivativeReliable && currentTempDerivative > -0.005)
-					double predicted = predictTemp(tOperationalDelay) ;
+					float predicted = predictTemp(tOperationalDelay) ;
 					Serial.print(" predicted temp : ");
 					Serial.println(predicted);
 					
-					if ( predicted >= (targetTemp - 1)  && isDerivativeReliable && currentTempDerivative > 0.001)  // targetTemp - 1 is to avoid overshoot because prediction is not precise enough
+					if ( predicted >= (*mySetpoint - 1)  && isDerivativeReliable && currentTempDerivative > 0.001)  // targetTemp - 1 is to avoid overshoot because prediction is not precise enough
 					{
 						Serial.println(" TURNOFFRELAY !");
 						turnOffRelay();
@@ -212,15 +213,15 @@ bool AdaptiveRegulator::Compute() {
 			if (isNewSample) 
 			{	
 				// when temp is close enough to target, try to calculate regulation values if they are not already set
-				if (isCounteracting == false && parametersRegulationSetForTemp != targetTemp && abs(actualTemp - targetTemp) < 3 )
+				if (isCounteracting == false && parametersRegulationSetForTemp != *mySetpoint && abs(actualTemp - *mySetpoint) < 3 )
 				{
 					PerformRegulationCalculations();
 				}	
 				
 				// predict temp at t + tOperationalDelay
-				double futureTemp = predictTemp(tOperationalDelay);	
+				float futureTemp = predictTemp(tOperationalDelay);
 				// counter act to stabilize near targetTemp
-				if (isCounteracting == false && futureTemp < targetTemp)
+				if (isCounteracting == false && futureTemp < *mySetpoint)
 				{
 					isCounteracting = true;
 					HeatForDegrees(actualTemp - futureTemp);
@@ -230,7 +231,7 @@ bool AdaptiveRegulator::Compute() {
 				{
 					if(IsStabilizingOrGrowing())
 					{ 
-						Serial.println("NATURAL_DROP ended: wait stabilize");					
+						Serial.println("NATURAL_DROP ended: wait stabilize");
 						opState = TEMP_RISE; // make sure we stabilize before regulating again
 					} 
 					
@@ -241,7 +242,7 @@ bool AdaptiveRegulator::Compute() {
 					}			
 				}
 				// we fell too much
-				if (actualTemp < targetTemp - 0.1)
+				if (actualTemp < *mySetpoint - 0.1)
 				{
 					StartBoostToTarget();	
 				}
@@ -262,8 +263,11 @@ bool AdaptiveRegulator::Compute() {
 				turnOffRelay();
 			}
 	   }
- 
+	   lastTime = tcurrent;
+	   return true;
   }
+  else
+	  return false;
 }
 
 
@@ -285,14 +289,14 @@ void AdaptiveRegulator::ResetVariablesForRegulationCalculation()
 void AdaptiveRegulator::EnterRegulateStateOrWaitSmoothLowering()
 {
 
-	if (actualTemp < targetTemp + 0.3)
+	if (actualTemp < *mySetpoint + 0.3)
 	{
 		Serial.println("EnterRegulateState !");
 		ResetVariablesForRegulationCalculation();
 		
 		tBackToHigh = 0;	
 		// make sure we do not start heating right away when entering regulation over target value
-		if (parametersRegulationSetForTemp == targetTemp && actualTemp > targetTemp )
+		if (parametersRegulationSetForTemp == *mySetpoint && actualTemp > *mySetpoint )
 		{	
 			tBackToHigh = 	millis() + durationOffPulse;
 		} 
@@ -313,16 +317,16 @@ void AdaptiveRegulator::WaitForNaturalDrop()
 {
 	opState = WAIT_NATURAL_DROP;
 	isCounteracting = false;
-	Serial.println("WAIT_NATURAL_DROP!"); 
+	Serial.println("WAIT_NATURAL_DROP!");
 	ResetVariablesForRegulationCalculation();	
 }
 
 void AdaptiveRegulator::Regulate()
 {  
-	if (actualTemp > ( targetTemp + 0.2 ))
+	if (actualTemp > ( *mySetpoint + 0.2 ))
 	{
 		// adapt regul values : they are too high
-		if ( IsStabilizing() && parametersRegulationSetForTemp == targetTemp && tStartRealRegulation > 0 && (millis() - tStartRealRegulation) > tOperationalDelay )
+		if ( IsStabilizing() && parametersRegulationSetForTemp == *mySetpoint && tStartRealRegulation > 0 && (millis() - tStartRealRegulation) > tOperationalDelay )
 		{
 			durationOnPulse = durationOnPulse / 1.3;
 			while ( durationOnPulse < MIN_SWITCHING_TIME )
@@ -343,10 +347,10 @@ void AdaptiveRegulator::Regulate()
 	// try to regulate temperature when we are at a stable targetTemp
 
 	// Maybe we are far below the goal ; time for a boost ?
-	if((targetTemp - actualTemp) >= 0.25)
+	if((*mySetpoint - *mySetpoint) >= 0.25)
 	{
 		// adapt regul values : they are too low
-		if ( IsStabilizing() && parametersRegulationSetForTemp == targetTemp && (millis() - tStartRealRegulation) > tOperationalDelay )
+		if ( IsStabilizing() && parametersRegulationSetForTemp == *mySetpoint && (millis() - tStartRealRegulation) > tOperationalDelay )
 		{
 			durationOffPulse = durationOffPulse / 1.3;
 			while ( durationOffPulse < MIN_SWITCHING_TIME )
@@ -357,13 +361,13 @@ void AdaptiveRegulator::Regulate()
 			Serial.print("durationOffPulse = ");
 			Serial.print(durationOffPulse);
 			Serial.print("   durationOnPulse = ");
-			Serial.println(durationOnPulse);			
+			Serial.println(durationOnPulse);
 		}	  
 		StartBoostToTarget();		
 	} 
 	else 
 	{			
-		if (parametersRegulationSetForTemp == targetTemp )
+		if (parametersRegulationSetForTemp == *mySetpoint )
 		{			
 			if (tStartRealRegulation == 0)
 			{
@@ -384,7 +388,7 @@ void AdaptiveRegulator::Regulate()
 		} 
 		else
 		{
-			if ((targetTemp - actualTemp) >= 0.1)
+			if ((*mySetpoint - actualTemp) >= 0.1)
 			{
 				//perform a boost with slight overshoot first
 				StartBoostToTarget(0.1);	
@@ -404,7 +408,7 @@ void AdaptiveRegulator::PerformRegulationCalculations()
 	{
 		// calc average of 3 last samples
 		
-		double averageTemp3 = (tempPreviousArray[0] + tempPreviousArray[1] +tempPreviousArray[2]) / 3;
+		float averageTemp3 = (tempPreviousArray[0] + tempPreviousArray[1] +tempPreviousArray[2]) / 3;
 	 
 		// find max and min temperatures
 		if (averageTemp3 > maxRegTEmp)
@@ -461,14 +465,14 @@ void AdaptiveRegulator::SetActualDerivative()
 	if (isNewSample)
 	{
 		isDerivativeReliable = checkDerivativeReliable();		
-		Serial.print("d = ");	
+		Serial.print("d = ");
 		if (isDerivativeReliable)
 		{
 			//remove biggest and lowest values (get rid off irregularities)
 			
 			// identify lowest and highest
-			double lowest =  1000;
-			double highest =  0;
+			float lowest =  1000;
+			float highest =  0;
 			int i=0;
 			for(i=0;i<6;i++) {
 				if(tempPreviousArray[i] > highest)
@@ -478,8 +482,8 @@ void AdaptiveRegulator::SetActualDerivative()
 				lowest = tempPreviousArray[i];
 			}
 			
-			double tempTemp[6];
-			double filteredValues[4];
+			float tempTemp[6];
+			float filteredValues[4];
 			bool isHighestRemoved = false;
 			bool isLowestRemoved = false;
 			//
@@ -534,7 +538,7 @@ void AdaptiveRegulator::SetActualDerivative()
 				}					
 			}
 			
-			double pastValues[2];
+			float pastValues[2];
 			pastValues[0] = ( filteredValues[0] + filteredValues[1] ) / 2;
 			pastValues[1] = ( filteredValues[2] + filteredValues[3] ) / 2;
 			// calculate last derivative
@@ -543,7 +547,7 @@ void AdaptiveRegulator::SetActualDerivative()
 			Serial.println(currentTempDerivative, DEC);
 		}	else
 		{
-			Serial.println("NC!");	
+			Serial.println("NC!");
 		}
 	}	
 }
@@ -552,7 +556,8 @@ void AdaptiveRegulator::GetTemperatureAndEnforceSecurity()
 {
 	if ( (long) (tcurrent - tGetTemperatureSample) >= 0)
 	{
-		actualTemp = getTemperature();		
+		tGetTemperatureSample = tcurrent + SAMPLE_DELAY;
+		actualTemp = *myInput;
 		
 		if (opState != TEMP_DROP && (tempPreviousArray[0] - actualTemp > 2))
 		{
@@ -570,7 +575,7 @@ void AdaptiveRegulator::GetTemperatureAndEnforceSecurity()
 			opState = TEMP_DROP;
 			tempBeforeDrop = tempPreviousArray[0];
 			waitForSuddenRise = false;	
-			Serial.println("REMOVED TEMP PROBE!");	
+			Serial.println("REMOVED TEMP PROBE!");
 			
 			if (tStartBoostTemp - millis() <= 3 * SAMPLE_DELAY)
 			{
@@ -618,7 +623,7 @@ void AdaptiveRegulator::GetTemperatureAndEnforceSecurity()
 		  Serial.print(";  ");
 		  Serial.println(actualTemp, 3);
 		}    
-		if (actualTemp > targetTemp + 0.15)
+		if (actualTemp > *mySetpoint + 0.15)
 		{
 			//	force to turn off when no need to be ON (0.15 offset accounts for regulation conditions)
 			tBackToLow = 0;
@@ -636,7 +641,7 @@ void AdaptiveRegulator::WatchForTempFalling()
 	if (isNewSample)
 	{
 		// START CONDITION : temp well below target && important negative derivative , but not freefall : -0.1 < d < -0.007,  3 times in a row
-		if ( (targetTemp - actualTemp) > 1 && IsFalling() )
+		if ( (*mySetpoint - *mySetpoint) > 1 && IsFalling() )
 		{
 			// must happen 3 times in a row
 			warningsBeforeCounterFall--;
@@ -660,11 +665,11 @@ void AdaptiveRegulator::StartBoostToTarget()
 	StartBoostToTarget(0);
 }
 
-void AdaptiveRegulator::StartBoostToTarget(double offset)
+void AdaptiveRegulator::StartBoostToTarget(float offset)
 {
 	// predict value at t + tOperationalDelay
 	actualTempAtBoostStart = actualTemp;	
-	double realTargetTemp = targetTemp + offset;
+	float realTargetTemp = *mySetpoint + offset;
 	if (realTargetTemp > actualTempAtBoostStart)
 	{	
 		expectedTempChange = realTargetTemp - actualTempAtBoostStart;
@@ -673,15 +678,15 @@ void AdaptiveRegulator::StartBoostToTarget(double offset)
 		HeatForDegrees(expectedTempChange);	
 		// change state
 		opState = BOOST_TEMP;
-		storedTargetTemp = targetTemp;
+		storedTargetTemp = *mySetpoint;
 		tStartRealRegulation = 0;
 	}
 }
 
 
-double AdaptiveRegulator::HeatingTimeNeeded(double degreeOffset)
+float AdaptiveRegulator::HeatingTimeNeeded(float degreeOffset)
 {
-	double secondPerDegreeGain;
+	float secondPerDegreeGain;
 	if (degreeOffset > LARGE_TEMP_DIFFERENCE)
 	{
 		secondPerDegreeGain = secondPerDegreeGainLarge;
@@ -693,7 +698,7 @@ double AdaptiveRegulator::HeatingTimeNeeded(double degreeOffset)
 	return max(degreeOffset * secondPerDegreeGain * 1000, MIN_SWITCHING_TIME) + burnupTime;
 }
 
-void AdaptiveRegulator::HeatForDegrees(double degrees)
+void AdaptiveRegulator::HeatForDegrees(float degrees)
 {
 	if (degrees > 0)
 	{
@@ -719,7 +724,7 @@ void AdaptiveRegulator::PerformBoostTemp()
    if ( (long) (millis() - tBackToLow) >= 0)
    {  	    
 		//check if target temp changed and adapt timings
-		if (targetTemp > storedTargetTemp)
+		if (*mySetpoint > storedTargetTemp)
 		{
 			StartBoostToTarget();
 		}
@@ -737,19 +742,19 @@ void AdaptiveRegulator::PerformBoostTemp()
 		}		 
    } else {  
 		// switch ON heat and wait for tBackToLow
-		 if (digitalRead(RELAY_OUT_PIN) == LOW) {
+		 if (digitalRead(_pin) == LOW) {
 		   turnOnRelay();
 		 }	 		 
 		 
 		//check if target temp changed and adapt timings
-		if (targetTemp != storedTargetTemp)
+		if (*mySetpoint != storedTargetTemp)
 		{		
-			double changeOffset =  targetTemp - storedTargetTemp;
-			double newExpectedTempChange = expectedTempChange + changeOffset;
+			float changeOffset =  *mySetpoint - storedTargetTemp;
+			float newExpectedTempChange = expectedTempChange + changeOffset;
 			
 			tBackToLow = tStartBoostTemp + HeatingTimeNeeded(newExpectedTempChange);
 			tCheckStabilize = tBackToLow + tOperationalDelay;
-			storedTargetTemp = targetTemp;
+			storedTargetTemp = *mySetpoint;
 			expectedTempChange = expectedTempChange + changeOffset;
 			
 			Serial.print("target temp changed, new tBackToLow = ");
@@ -772,22 +777,22 @@ void AdaptiveRegulator::FinishBoostTemp()
 }
 
 
-double AdaptiveRegulator::predictTemp(unsigned long horizon)
+float AdaptiveRegulator::predictTemp(unsigned long horizon)
 {
-	double horizonSeconds = horizon/1000;	
+	float horizonSeconds = horizon/1000;
 		
 	// compute predicted value	
 	return ((( tempPreviousArray[0] + tempPreviousArray[1] + tempPreviousArray[2] ) / 3 ) + (currentTempDerivative * horizonSeconds));
 }
 
-void AdaptiveRegulator::AdaptGain(double resultingTemp)
+void AdaptiveRegulator::AdaptGain(float resultingTemp)
 {
 	// only take account of ON_Durations > burnupTime and make sure we waited tOperationalDelay
 	unsigned long boostTempDuration = millis() - tStartBoostTemp;   
 	unsigned long boostOnTempDuration = tLastTurnOffRelay - tStartBoostTemp;   
     if ( boostTempDuration > tOperationalDelay && boostOnTempDuration > burnupTime )
 	{	
-        double gain;
+        float gain;
 		if (boostType == LOWBOOST)
 		{
 			gain = secondPerDegreeGainSmall;
@@ -798,7 +803,7 @@ void AdaptiveRegulator::AdaptGain(double resultingTemp)
 		}
 			
 			
-		double actualTempChange = resultingTemp - actualTempAtBoostStart;
+		float actualTempChange = resultingTemp - actualTempAtBoostStart;
 			
 		if (actualTempChange < (expectedTempChange / 5) )
 		{
@@ -861,8 +866,8 @@ void AdaptiveRegulator::StartInitialRamping()
 void AdaptiveRegulator::setupCutOffTempForInitialRamping()
 {
 	// calculate turn-off temperature
-   firstRampCutOffTemp = initialTemp +  (targetTemp - initialTemp) * FIRST_RAMP_CUTOFF_RATIO;
-   storedTargetTemp = targetTemp;
+   firstRampCutOffTemp = initialTemp +  (*mySetpoint - initialTemp) * FIRST_RAMP_CUTOFF_RATIO;
+   storedTargetTemp = *mySetpoint;
    
    Serial.print("firstRampCutOffTemp = ");
    Serial.println(firstRampCutOffTemp, DEC);
@@ -870,7 +875,7 @@ void AdaptiveRegulator::setupCutOffTempForInitialRamping()
 
 void AdaptiveRegulator::PerformFirstRamp()
 {
-    if (targetTemp != storedTargetTemp)
+    if (*mySetpoint != storedTargetTemp)
     {
 		// target temp was changed ! Update firstRampCutOffTemp
 		setupCutOffTempForInitialRamping();
@@ -889,7 +894,7 @@ void AdaptiveRegulator::PerformFirstRamp()
        if ( isNewSample )
        {            
           // check if stabilizing near setpoint
-          if  ((abs(actualTemp - initialTemp) > abs(targetTemp - actualTemp)) && IsStabilizingOrDropping())
+          if  ((abs(actualTemp - initialTemp) > abs(*mySetpoint - actualTemp)) && IsStabilizingOrDropping())
           {
             FinishInitialRamping();
           }               
@@ -922,7 +927,7 @@ void AdaptiveRegulator::FinishInitialRamping()
   tEndFirstRamp = millis();
   
   // find top temperature before stabilization or drop
-  double finalTemp = 0;
+  float finalTemp = 0;
   for(int i=0;i<6;i++)
   {
 	if (tempPreviousArray[i] > finalTemp)
@@ -1015,7 +1020,7 @@ void AdaptiveRegulator::shutdownDevice()
 	isHeatOn = false;
 }
 
-void AdaptiveRegulator::SetApproximatePulseDurationsForREgulation(double tempLost, unsigned long regDelay )
+void AdaptiveRegulator::SetApproximatePulseDurationsForREgulation(float tempLost, unsigned long regDelay )
 {
 	// calculate needed uptime to compensate
 	unsigned long neededUptimeForCompensate = tempLost * secondPerDegreeGainRef * 1000;
@@ -1066,12 +1071,12 @@ void AdaptiveRegulator::SetPulseDurationsForREgulation(unsigned long neededUptim
 		}
 		
 		// store that we have good parameters for this temperature
-		parametersRegulationSetForTemp = targetTemp;
+		parametersRegulationSetForTemp = *mySetpoint;
 		
 		Serial.print("durationOffPulse = ");
 		Serial.print(durationOffPulse);
 		Serial.print("   durationOnPulse = ");
-		Serial.println(durationOnPulse);	
+		Serial.println(durationOnPulse);
 	}
 }
 // 
@@ -1085,7 +1090,7 @@ void AdaptiveRegulator::SetPulseDurationsForREgulation(unsigned long neededUptim
 
 // ------------------------- temperature array UTILITIES
 
-void AdaptiveRegulator::tempPreviousArrayPushValue(double val)
+void AdaptiveRegulator::tempPreviousArrayPushValue(float val)
 {
 		tempPreviousArray[5] = tempPreviousArray[4];
 		tempPreviousArray[4] = tempPreviousArray[3];
@@ -1152,7 +1157,7 @@ void AdaptiveRegulator::soundAlarm()
 
 void AdaptiveRegulator::alertTemperatureNearlySet()
 {
-  if (isWaitingForTempAlert == true && abs(targetTemp - actualTemp) < 0.3)
+  if (isWaitingForTempAlert == true && abs(*mySetpoint - actualTemp) < 0.3)
   {
     soundAlarm();
     isWaitingForTempAlert = false;
@@ -1160,9 +1165,3 @@ void AdaptiveRegulator::alertTemperatureNearlySet()
 }
 
 
-float AdaptiveRegulator::getTemperature()
-{
-  // plan next measurement
-  tGetTemperatureSample = millis() + SAMPLE_DELAY;
-  return &myInput;
-}
